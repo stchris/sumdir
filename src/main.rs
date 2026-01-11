@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{collections::BTreeMap, os::unix::fs::MetadataExt, path::PathBuf};
 use walkdir::WalkDir;
 
 use clap::Parser;
@@ -18,6 +18,7 @@ struct Cli {
 struct Report {
     extensions: BTreeMap<String, i32>,
     folders: Vec<PathBuf>,
+    size: u64,
 }
 
 fn scan(target: PathBuf) -> Report {
@@ -46,6 +47,7 @@ fn scan(target: PathBuf) -> Report {
                 .to_owned()
                 .into_string()
                 .unwrap_or_default();
+            report.size += entry.path().metadata().unwrap().size();
             report
                 .extensions
                 .entry(ext)
@@ -64,6 +66,10 @@ fn main() {
         std::process::exit(1);
     }
     let report = scan(cli.target);
+    let num_files: i32 = report.extensions.values().sum();
+    let num_folders = report.folders.len();
+    let size = report.size;
+    println!("{num_files} files, {num_folders} folders, {size} bytes");
     for (ext, count) in report
         .extensions
         .iter()
@@ -87,5 +93,7 @@ mod tests {
             ("txt".to_string(), 1),
         ]);
         assert_eq!(report.extensions, expected);
+        assert_eq!(report.folders.len(), 1);
+        assert_eq!(report.size, 97);
     }
 }
