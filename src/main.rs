@@ -9,6 +9,9 @@ use itertools::Itertools;
 struct Cli {
     #[arg(required = true)]
     target: PathBuf,
+
+    #[arg(short, long, default_value_t = false)]
+    verbose: bool,
 }
 
 fn main() {
@@ -37,7 +40,9 @@ fn main() {
             .into_string()
             .unwrap_or_default();
         extensions.entry(ext).and_modify(|e| *e += 1).or_insert(1);
-        println!("{path}");
+        if cli.verbose {
+            println!("{path}");
+        }
     }
     for (ext, count) in extensions.iter().sorted_by(|a, b| Ord::cmp(&b.1, &a.1)) {
         println!("{ext}: {count}")
