@@ -68,8 +68,8 @@ fn main() {
     let report = scan(cli.target);
     let num_files: i32 = report.extensions.values().sum();
     let num_folders = report.folders.len();
-    let size = report.size;
-    println!("{num_files} files, {num_folders} folders, {size} bytes");
+    let size = friendly_bytes(report.size);
+    println!("{num_files} files, {num_folders} folders, {size}");
     for (ext, count) in report
         .extensions
         .iter()
@@ -77,6 +77,26 @@ fn main() {
     {
         println!("{ext}: {count}")
     }
+}
+
+fn friendly_bytes(bytes: u64) -> String {
+    if bytes > 1024 {
+        let kb = bytes / 1024;
+        if kb > 1024 {
+            let mb = bytes / 1024 / 1024;
+            if mb > 1024 {
+                let gb = bytes / 1024 / 1024 / 1024;
+                if gb > 1024 {
+                    let tb = bytes / 1024 / 1024 / 1024 / 1024;
+                    return format!("{tb} TiB");
+                }
+                return format!("{gb} GiB");
+            }
+            return format!("{mb} MiB");
+        }
+        return format!("{kb} KiB");
+    }
+    format!("{bytes} bytes")
 }
 
 #[cfg(test)]
@@ -95,5 +115,14 @@ mod tests {
         assert_eq!(report.extensions, expected);
         assert_eq!(report.folders.len(), 1);
         assert_eq!(report.size, 97);
+    }
+
+    #[test]
+    fn test_friendly_bytes() {
+        assert_eq!(friendly_bytes(123), "123 bytes".to_string());
+        assert_eq!(friendly_bytes(1234), "1 KB".to_string());
+        assert_eq!(friendly_bytes(1234567), "1 MB".to_string());
+        assert_eq!(friendly_bytes(1234567890), "1 GB".to_string());
+        assert_eq!(friendly_bytes(1234567890123), "1 TB".to_string());
     }
 }
