@@ -26,3 +26,51 @@ Single-file application (`src/main.rs`) with:
 - `friendly_bytes()`: converts byte counts to human-readable format (KiB, MiB, GiB, TiB)
 
 Test data lives in `testdata/` folder with sample files of various types.
+
+## Planned Feature: MIME Type Detection
+
+Use the `infer` crate to detect file types by magic bytes instead of relying solely on file extensions.
+
+### Design
+
+**New CLI flag**: `-m, --mime` to group files by MIME type instead of extension
+
+**Changes to Report struct**:
+```rust
+struct Report {
+    extensions: BTreeMap<String, i32>,
+    mimetypes: BTreeMap<String, i32>,  // NEW: tracks MIME type counts
+    folders: Vec<PathBuf>,
+    size: u64,
+}
+```
+
+**Changes to scan()**:
+- Read first 8KB of each file (enough for magic byte detection)
+- Call `infer::get()` to detect MIME type
+- Fall back to "application/octet-stream" for unknown types
+- Store results in `mimetypes` map
+
+**New display methods**:
+- `display_text_mime()`, `display_csv_mime()`, `display_json_mime()`
+- Or add a `group_by: GroupBy` enum to existing display methods
+
+**Dependency**:
+```toml
+infer = "0.16"
+```
+
+**Example usage**:
+```bash
+sumdir ./mydir -m           # group by MIME type
+sumdir ./mydir -m -o json   # MIME types as JSON
+```
+
+**Example output**:
+```
+15 files, 3 folders, 1.2 MiB
+image/png: 5
+text/plain: 4
+application/pdf: 3
+application/octet-stream: 3
+```
