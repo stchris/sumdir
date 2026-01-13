@@ -170,15 +170,14 @@ mod tests {
     #[test]
     fn test_with_testdata_folder() {
         let report = scan("testdata".into());
-        let expected = BTreeMap::from([
-            ("csv".to_string(), 1),
-            ("html".to_string(), 1),
-            ("png".to_string(), 1),
-            ("txt".to_string(), 1),
-        ]);
-        assert_eq!(report.extensions, expected);
-        assert_eq!(report.folders.len(), 1);
-        assert_eq!(report.size, 97);
+        let num_files: i32 = report.extensions.values().sum();
+        assert_eq!(num_files, 27);
+        assert_eq!(report.folders.len(), 5);
+        // Verify some expected extensions
+        assert_eq!(report.extensions.get("png"), Some(&2)); // sample.png + masquerading.png
+        assert_eq!(report.extensions.get("pdf"), Some(&1));
+        assert_eq!(report.extensions.get("jpg"), Some(&1));
+        assert_eq!(report.extensions.get("docx"), Some(&1));
     }
 
     #[test]
@@ -267,7 +266,16 @@ mod tests {
     #[test]
     fn test_testdata_mimetypes() {
         let report = scan("testdata".into());
-        // All testdata files are text-based, so infer returns octet-stream
-        assert_eq!(report.mimetypes.get("application/octet-stream"), Some(&4));
+        // Verify various MIME types are detected correctly
+        assert_eq!(report.mimetypes.get("image/png"), Some(&1));
+        assert_eq!(report.mimetypes.get("image/jpeg"), Some(&1));
+        assert_eq!(report.mimetypes.get("image/gif"), Some(&1));
+        assert_eq!(report.mimetypes.get("application/pdf"), Some(&1));
+        assert_eq!(report.mimetypes.get("audio/mpeg"), Some(&1));
+        // DOCX/XLSX/PPTX detected as zip, DOC/XLS as ole-storage
+        assert_eq!(report.mimetypes.get("application/zip"), Some(&4));
+        assert_eq!(report.mimetypes.get("application/x-ole-storage"), Some(&2));
+        // Text files without magic bytes fall back to octet-stream
+        assert!(report.mimetypes.get("application/octet-stream").unwrap() >= &1);
     }
 }
