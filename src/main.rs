@@ -4,6 +4,14 @@ use walkdir::WalkDir;
 use clap::Parser;
 use itertools::Itertools;
 
+#[derive(Clone, Default, clap::ValueEnum)]
+enum OutputFormat {
+    #[default]
+    Text,
+    Csv,
+    Json,
+}
+
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
@@ -12,6 +20,9 @@ struct Cli {
 
     #[arg(short, long, default_value_t = false)]
     verbose: bool,
+
+    #[arg(short, long, value_enum, default_value_t = OutputFormat::Text)]
+    output: OutputFormat,
 }
 
 #[derive(Debug, Default)]
@@ -19,6 +30,50 @@ struct Report {
     extensions: BTreeMap<String, i32>,
     folders: Vec<PathBuf>,
     size: u64,
+}
+
+impl Report {
+    fn display(&self, format: &OutputFormat) {
+        match format {
+            OutputFormat::Text => self.display_text(),
+            OutputFormat::Csv => self.display_csv(),
+            OutputFormat::Json => self.display_json(),
+        }
+    }
+
+    fn display_text(&self) {
+        let num_files: i32 = self.extensions.values().sum();
+        let size = friendly_bytes(self.size);
+        println!("{num_files} files, {} folders, {size}", self.folders.len());
+        for (ext, count) in self.extensions.iter().sorted_by(|a, b| b.1.cmp(a.1)) {
+            println!("{ext}: {count}");
+        }
+    }
+
+    fn display_csv(&self) {
+        println!("extension,count");
+        for (ext, count) in self.extensions.iter().sorted_by(|a, b| b.1.cmp(a.1)) {
+            println!("{ext},{count}");
+        }
+    }
+
+    fn display_json(&self) {
+        let num_files: i32 = self.extensions.values().sum();
+        let extensions: Vec<String> = self
+            .extensions
+            .iter()
+            .sorted_by(|a, b| b.1.cmp(a.1))
+            .map(|(ext, count)| format!("    \"{ext}\": {count}"))
+            .collect();
+        println!("{{");
+        println!("  \"files\": {num_files},");
+        println!("  \"folders\": {},", self.folders.len());
+        println!("  \"size\": {},", self.size);
+        println!("  \"extensions\": {{");
+        println!("{}", extensions.join(",\n"));
+        println!("  }}");
+        println!("}}");
+    }
 }
 
 fn scan(target: PathBuf) -> Report {
@@ -66,17 +121,7 @@ fn main() {
         std::process::exit(1);
     }
     let report = scan(cli.target);
-    let num_files: i32 = report.extensions.values().sum();
-    let num_folders = report.folders.len();
-    let size = friendly_bytes(report.size);
-    println!("{num_files} files, {num_folders} folders, {size}");
-    for (ext, count) in report
-        .extensions
-        .iter()
-        .sorted_by(|a, b| Ord::cmp(&b.1, &a.1))
-    {
-        println!("{ext}: {count}")
-    }
+    report.display(&cli.output);
 }
 
 fn friendly_bytes(bytes: u64) -> String {
@@ -120,9 +165,9 @@ mod tests {
     #[test]
     fn test_friendly_bytes() {
         assert_eq!(friendly_bytes(123), "123 bytes".to_string());
-        assert_eq!(friendly_bytes(1234), "1 KB".to_string());
-        assert_eq!(friendly_bytes(1234567), "1 MB".to_string());
-        assert_eq!(friendly_bytes(1234567890), "1 GB".to_string());
-        assert_eq!(friendly_bytes(1234567890123), "1 TB".to_string());
+        assert_eq!(friendly_bytes(1234), "1 KiB".to_string());
+        assert_eq!(friendly_bytes(1234567), "1 MiB".to_string());
+        assert_eq!(friendly_bytes(1234567890), "1 GiB".to_string());
+        assert_eq!(friendly_bytes(1234567890123), "1 TiB".to_string());
     }
 }
