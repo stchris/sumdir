@@ -32,12 +32,13 @@ cargo install cargo-release git-cliff
 
 ### Making a Release
 
-1. Ensure all changes are committed
-2. Run cargo-release with the desired version bump:
+1. Ensure the changelog is up to date (`$ git cliff -o CHANGELOG.md`)
+2. Ensure all changes are committed
+3. Run cargo-release with the desired version bump:
    ```bash
-   cargo release patch  # 0.1.0 -> 0.1.1
-   cargo release minor  # 0.1.0 -> 0.2.0
-   cargo release major  # 0.1.0 -> 1.0.0
+   cargo release --no-publish patch  # 0.1.0 -> 0.1.1
+   cargo release --no-publish minor  # 0.1.0 -> 0.2.0
+   cargo release --no-publish major  # 0.1.0 -> 1.0.0
    ```
 
 This will automatically:
