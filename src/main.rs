@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::Read;
-use std::{collections::BTreeMap, os::unix::fs::MetadataExt, path::PathBuf};
+use std::{collections::BTreeMap, path::PathBuf};
 use walkdir::WalkDir;
 
 use anyhow::{Context, Result};
@@ -144,7 +144,7 @@ fn process_entry(entry: &walkdir::DirEntry, report: &mut Report) -> Result<()> {
         .metadata()
         .with_context(|| format!("failed to read metadata for {:?}", entry.path()))?;
 
-    report.size += metadata.size();
+    report.size += metadata.len();
     report
         .extensions
         .entry(ext)
