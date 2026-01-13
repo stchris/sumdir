@@ -1,6 +1,16 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [0.1.2] - 2026-01-13
+
+### Fixed
+
+- Use cross-platform metadata.len() instead of Unix-specific size()
+
+### Other
+
+- Merge pull request #11 from stchris/claude/issue-10-20260113-1629
+
 ## [0.1.1] - 2026-01-13
 
 ### Documentation
