@@ -16,3 +16,6 @@ walkdir = "2.5.0"
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+[workspace.metadata.release]
+pre-release-hook = ["git", "cliff", "-o", "CHANGELOG.md", "--tag", "{{version}}"]
