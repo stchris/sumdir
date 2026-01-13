@@ -16,5 +16,16 @@ All notable changes to this project will be documented in this file.
 - Ignore claude
 - Add MIME type detection using infer crate
 - Expand testdata with various file formats
+- Add changelog generation with git-cliff
+- Use proper error handling with context everywhere and disallow unwrap
+- "Claude PR Assistant workflow"
+- "Claude Code Review workflow"
+- Merge pull request #6 from stchris/add-claude-github-actions-1768307145556
+- Update Claude.md
+- "Update Claude PR Assistant workflow"
+- "Update Claude Code Review workflow"
+- Merge pull request #7 from stchris/add-claude-github-actions-1768313499371
+- Merge pull request #8 from stchris/test-lint-action
+- Merge pull request #9 from stchris/cargo-updates
 
 
