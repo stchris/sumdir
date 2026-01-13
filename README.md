@@ -14,6 +14,33 @@ sumdir <directory> -o json      # output as JSON
 sumdir <directory> -m -o json   # combine flags
 ```
 
+## Example output
+
+```bash
+$ sumdir -m testdata/
+
+27 files, 5 folders, 1 KiB
+application/octet-stream: 5
+application/zip: 4
+application/x-ole-storage: 2
+application/gzip: 1
+application/pdf: 1
+application/x-7z-compressed: 1
+application/x-tar: 1
+audio/mpeg: 1
+audio/ogg: 1
+audio/x-flac: 1
+audio/x-wav: 1
+image/bmp: 1
+image/gif: 1
+image/jpeg: 1
+image/png: 1
+image/tiff: 1
+image/vnd.microsoft.icon: 1
+image/webp: 1
+text/xml: 1
+```
+
 ## Installation
 
 ```bash
