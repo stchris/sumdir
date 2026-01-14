@@ -5,6 +5,7 @@ use walkdir::WalkDir;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use indicatif::{HumanBytes, ProgressBar, ProgressStyle};
 use itertools::Itertools;
 
 #[derive(Clone, Default, clap::ValueEnum)]
@@ -29,6 +30,9 @@ struct Cli {
 
     #[arg(short, long, default_value_t = false)]
     mime: bool,
+
+    #[arg(short, long, default_value_t = true)]
+    progress_bar: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -62,7 +66,7 @@ impl Report {
 
     fn display_text(&self, data: &BTreeMap<String, i32>) {
         let num_files: i32 = data.values().sum();
-        let size = friendly_bytes(self.size);
+        let size = HumanBytes(self.size);
         let error_info = if self.errors.is_empty() {
             String::new()
         } else {
@@ -153,6 +157,7 @@ fn process_entry(entry: &walkdir::DirEntry, report: &mut Report) -> Result<()> {
 
     let mimetype = detect_mimetype(entry.path())
         .with_context(|| format!("failed to detect mimetype for {:?}", entry.path()))?;
+
     report
         .mimetypes
         .entry(mimetype)
@@ -162,19 +167,39 @@ fn process_entry(entry: &walkdir::DirEntry, report: &mut Report) -> Result<()> {
     Ok(())
 }
 
-fn scan(target: PathBuf) -> Report {
+fn scan(target: PathBuf, progress_bar: bool) -> Report {
     let mut report = Report::default();
+
+    let pb = if progress_bar {
+        let progress = ProgressBar::new_spinner();
+        progress.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.green} [{elapsed}] {wide_msg}")
+                .expect("failed to set progress style"),
+        );
+        progress.set_message("Scanning target...");
+        Some(progress)
+    } else {
+        None
+    };
 
     for entry in WalkDir::new(target).into_iter().skip(1) {
         match entry {
             Ok(entry) => {
                 if entry.path().is_dir() {
                     report.folders.push(entry.path().to_path_buf());
-                } else if let Err(e) = process_entry(&entry, &mut report) {
-                    report.errors.push(ScanError {
-                        path: entry.path().to_path_buf(),
-                        message: e.to_string(),
-                    });
+                } else {
+                    if let Some(ref progress) = pb {
+                        progress.set_message(format!("Processing: {}", entry.path().display()));
+                        progress.tick();
+                    }
+
+                    if let Err(e) = process_entry(&entry, &mut report) {
+                        report.errors.push(ScanError {
+                            path: entry.path().to_path_buf(),
+                            message: e.to_string(),
+                        });
+                    }
                 }
             }
             Err(e) => {
@@ -185,6 +210,10 @@ fn scan(target: PathBuf) -> Report {
                 });
             }
         }
+    }
+
+    if let Some(progress) = pb {
+        progress.finish_with_message(format!("Completed with {} errors", report.errors.len()));
     }
 
     report
@@ -199,28 +228,8 @@ fn main() {
         );
         std::process::exit(1);
     }
-    let report = scan(cli.target);
+    let report = scan(cli.target, cli.progress_bar);
     report.display(&cli.output, cli.mime);
-}
-
-fn friendly_bytes(bytes: u64) -> String {
-    if bytes > 1024 {
-        let kb = bytes / 1024;
-        if kb > 1024 {
-            let mb = bytes / 1024 / 1024;
-            if mb > 1024 {
-                let gb = bytes / 1024 / 1024 / 1024;
-                if gb > 1024 {
-                    let tb = bytes / 1024 / 1024 / 1024 / 1024;
-                    return format!("{tb} TiB");
-                }
-                return format!("{gb} GiB");
-            }
-            return format!("{mb} MiB");
-        }
-        return format!("{kb} KiB");
-    }
-    format!("{bytes} bytes")
 }
 
 #[cfg(test)]
@@ -229,7 +238,7 @@ mod tests {
 
     #[test]
     fn test_with_testdata_folder() {
-        let report = scan("testdata".into());
+        let report = scan("testdata".into(), false);
         let num_files: i32 = report.extensions.values().sum();
         assert_eq!(num_files, 27);
         assert_eq!(report.folders.len(), 5);
@@ -239,15 +248,6 @@ mod tests {
         assert_eq!(report.extensions.get("pdf"), Some(&1));
         assert_eq!(report.extensions.get("jpg"), Some(&1));
         assert_eq!(report.extensions.get("docx"), Some(&1));
-    }
-
-    #[test]
-    fn test_friendly_bytes() {
-        assert_eq!(friendly_bytes(123), "123 bytes".to_string());
-        assert_eq!(friendly_bytes(1234), "1 KiB".to_string());
-        assert_eq!(friendly_bytes(1234567), "1 MiB".to_string());
-        assert_eq!(friendly_bytes(1234567890), "1 GiB".to_string());
-        assert_eq!(friendly_bytes(1234567890123), "1 TiB".to_string());
     }
 
     #[test]
@@ -335,7 +335,7 @@ mod tests {
             .write_all(b"Hello")
             .expect("failed to write txt");
 
-        let report = scan(dir.clone());
+        let report = scan(dir.clone(), false);
 
         assert_eq!(report.mimetypes.get("image/png"), Some(&1));
         assert_eq!(report.mimetypes.get("application/pdf"), Some(&1));
@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn test_testdata_mimetypes() {
-        let report = scan("testdata".into());
+        let report = scan("testdata".into(), false);
         // Verify various MIME types are detected correctly
         assert_eq!(report.mimetypes.get("image/png"), Some(&1));
         assert_eq!(report.mimetypes.get("image/jpeg"), Some(&1));
@@ -392,7 +392,7 @@ mod tests {
         let readable_file = dir.join("readable.txt");
         std::fs::write(&readable_file, "hello").expect("failed to write readable file");
 
-        let report = scan(dir.clone());
+        let report = scan(dir.clone(), false);
 
         // Should have scanned the readable file
         assert_eq!(report.extensions.get("txt"), Some(&1));
