@@ -1,6 +1,17 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [0.2.0] - 2026-01-14
+
+### Added
+
+- Progress bar
+
+### Other
+
+- Merge pull request #12 from stchris/progress
+- Delete .github/workflows/claude-code-review.yml
+
 ## [0.1.2] - 2026-01-13
 
 ### Fixed
