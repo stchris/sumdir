@@ -4,6 +4,20 @@ summarize + dir = sumdir
 
 Scans a folder and outputs statistics in terms of file types and counts.
 
+## Installation
+
+```
+$ brew install stchris/formulae/sumdir
+```
+
+or 
+
+```
+$ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/stchris/sumdir/releases/download/v0.4.0/sumdir-installer.sh | sh
+```
+
+or check the [Releases](https://github.com/stchris/sumdir/releases) page.
+
 ## Usage
 
 ```bash
@@ -41,12 +55,6 @@ image/webp: 1
 text/xml: 1
 ```
 
-## Installation
-
-```bash
-cargo install sumdir
-```
-
 ## Releasing
 
 This project uses [cargo-dist](https://opensource.axo.dev/cargo-dist/) for releases and [git-cliff](https://git-cliff.org/) for changelog generation.
@@ -67,32 +75,3 @@ cargo install cargo-release git-cliff
    cargo release --no-publish minor  # 0.1.0 -> 0.2.0
    cargo release --no-publish major  # 0.1.0 -> 1.0.0
    ```
-
-This will automatically:
-- Update version in `Cargo.toml`
-- Generate/update `CHANGELOG.md` via git-cliff (pre-release hook)
-- Create a git commit and tag
-- Push to trigger the release workflow
-
-### Changelog Generation
-
-The changelog is automatically generated from commit history using git-cliff. Commits are grouped by type based on conventional commit prefixes:
-
-| Prefix | Changelog Section |
-|--------|-------------------|
-| `feat` | Added |
-| `fix` | Fixed |
-| `refactor` | Changed |
-| `doc` | Documentation |
-| `perf` | Performance |
-| `test` | Testing |
-
-To manually regenerate the changelog:
-```bash
-git cliff -o CHANGELOG.md
-```
-
-To preview what a release would look like:
-```bash
-git cliff --tag v1.0.0
-```
