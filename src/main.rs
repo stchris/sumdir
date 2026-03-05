@@ -1,6 +1,8 @@
 use flate2::read::GzDecoder;
+use ftm_types::generated::ftm_entity::FtmEntity;
 use jwalk::WalkDir;
 use rayon::prelude::*;
+use sha1::{Digest, Sha1};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -8,6 +10,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 use tar::Archive as TarArchive;
 
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use clap::Parser;
 use indicatif::{HumanBytes, ProgressBar, ProgressStyle};
 use itertools::Itertools;
@@ -18,6 +21,7 @@ enum OutputFormat {
     Text,
     Csv,
     Json,
+    Ftm,
 }
 
 #[derive(Parser)]
@@ -45,6 +49,23 @@ struct ScanError {
     message: String,
 }
 
+#[derive(Debug, Clone)]
+struct ScanConfig {
+    collect_file_entries: bool,
+    progress_bar: bool,
+}
+
+#[derive(Debug, Clone)]
+struct FileEntry {
+    path: PathBuf,
+    mime_type: String,
+    size: u64,
+    created_at: Option<String>,
+    modified_at: Option<String>,
+    content_hash: Option<String>,
+    is_dir: bool,
+}
+
 #[derive(Debug, Default)]
 struct Report {
     extensions: BTreeMap<String, i32>,
@@ -52,6 +73,7 @@ struct Report {
     folders: Vec<PathBuf>,
     size: u64,
     errors: Vec<ScanError>,
+    file_entries: Vec<FileEntry>,
 }
 
 impl Report {
@@ -65,6 +87,7 @@ impl Report {
             OutputFormat::Text => self.display_text(data),
             OutputFormat::Csv => self.display_csv(data, use_mime),
             OutputFormat::Json => self.display_json(data, use_mime),
+            OutputFormat::Ftm => self.display_ftm(),
         }
     }
 
@@ -124,6 +147,18 @@ impl Report {
         println!("  ]");
         println!("}}");
     }
+
+    fn display_ftm(&self) {
+        for entry in &self.file_entries {
+            match file_entry_to_ftm_entity(entry) {
+                Ok(entity) => match serde_json::to_string(&entity) {
+                    Ok(json) => println!("{json}"),
+                    Err(e) => eprintln!("error: failed to serialize entity: {e}"),
+                },
+                Err(e) => eprintln!("error: failed to convert entry {:?}: {e}", entry.path),
+            }
+        }
+    }
 }
 
 fn detect_mimetype(path: &std::path::Path) -> Result<String> {
@@ -136,6 +171,81 @@ fn detect_mimetype(path: &std::path::Path) -> Result<String> {
         return Ok(kind.mime_type().to_string());
     }
     Ok("application/octet-stream".to_string())
+}
+
+fn compute_sha1(path: &Path) -> Result<String> {
+    let data = std::fs::read(path)
+        .with_context(|| format!("failed to read {:?} for SHA1 computation", path))?;
+    let mut hasher = Sha1::new();
+    hasher.update(&data);
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn system_time_to_iso8601(t: std::time::SystemTime) -> String {
+    let dt: DateTime<Utc> = t.into();
+    dt.to_rfc3339()
+}
+
+fn mime_to_ftm_schema(mime: &str) -> &'static str {
+    if mime.starts_with("image/") {
+        "Image"
+    } else if mime.starts_with("audio/") {
+        "Audio"
+    } else if mime.starts_with("video/") {
+        "Video"
+    } else {
+        match mime {
+            "application/pdf" => "Pages",
+            "application/zip"
+            | "application/x-tar"
+            | "application/gzip"
+            | "application/x-7z-compressed" => "Package",
+            "message/rfc822" => "Email",
+            "text/html" => "HyperText",
+            "text/plain" => "PlainText",
+            _ => "Document",
+        }
+    }
+}
+
+fn file_entry_to_ftm_entity(entry: &FileEntry) -> Result<FtmEntity> {
+    let schema = if entry.is_dir {
+        "Folder"
+    } else {
+        mime_to_ftm_schema(&entry.mime_type)
+    };
+
+    let filename = entry
+        .path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    let mut obj = serde_json::json!({
+        "id": entry.path.to_string_lossy().as_ref(),
+        "schema": schema,
+        "fileName": [&filename],
+        "name": [&filename],
+    });
+
+    if !entry.is_dir {
+        obj["mimeType"] = serde_json::json!([&entry.mime_type]);
+        obj["fileSize"] = serde_json::json!([entry.size as f64]);
+    }
+
+    if let Some(ref hash) = entry.content_hash {
+        obj["contentHash"] = serde_json::json!([hash]);
+    }
+    if let Some(ref t) = entry.created_at {
+        obj["createdAt"] = serde_json::json!([t]);
+    }
+    if let Some(ref t) = entry.modified_at {
+        obj["modifiedAt"] = serde_json::json!([t]);
+    }
+
+    let json_str = serde_json::to_string(&obj).context("failed to serialize entity to JSON")?;
+    FtmEntity::from_ftm_json(&json_str)
+        .map_err(|e| anyhow::anyhow!("failed to parse FTM entity: {e}"))
 }
 
 fn is_archive_extension(ext: &str) -> bool {
@@ -294,7 +404,7 @@ fn scan_archive_contents(path: &Path, report: &mut Report) -> Result<()> {
     }
 }
 
-fn process_entry(path: &std::path::Path, report: &mut Report) -> Result<()> {
+fn process_entry(path: &std::path::Path, report: &mut Report, config: &ScanConfig) -> Result<()> {
     let ext = path
         .extension()
         .unwrap_or_default()
@@ -318,9 +428,24 @@ fn process_entry(path: &std::path::Path, report: &mut Report) -> Result<()> {
 
     report
         .mimetypes
-        .entry(mimetype)
+        .entry(mimetype.clone())
         .and_modify(|e| *e += 1)
         .or_insert(1);
+
+    if config.collect_file_entries {
+        let content_hash = compute_sha1(path).ok();
+        let created_at = metadata.created().ok().map(system_time_to_iso8601);
+        let modified_at = metadata.modified().ok().map(system_time_to_iso8601);
+        report.file_entries.push(FileEntry {
+            path: path.to_path_buf(),
+            mime_type: mimetype,
+            size: metadata.len(),
+            created_at,
+            modified_at,
+            content_hash,
+            is_dir: false,
+        });
+    }
 
     if is_archive_extension(&ext) {
         scan_archive_contents(path, report)
@@ -346,6 +471,7 @@ fn merge_reports(mut a: Report, b: Report) -> Report {
     a.folders.extend(b.folders);
     a.size += b.size;
     a.errors.extend(b.errors);
+    a.file_entries.extend(b.file_entries);
     a
 }
 
@@ -363,12 +489,12 @@ fn make_progress_bar(enabled: bool) -> Option<ProgressBar> {
     Some(progress)
 }
 
-fn scan(target: PathBuf, progress_bar: bool) -> Report {
-    let pb = make_progress_bar(progress_bar);
+fn scan(target: PathBuf, config: &ScanConfig) -> Report {
+    let pb = make_progress_bar(config.progress_bar);
 
     if target.is_file() {
         let mut report = Report::default();
-        if let Err(e) = process_entry(&target, &mut report) {
+        if let Err(e) = process_entry(&target, &mut report, config) {
             report.errors.push(ScanError {
                 path: target,
                 message: e.to_string(),
@@ -381,6 +507,7 @@ fn scan(target: PathBuf, progress_bar: bool) -> Report {
     }
 
     let pb_fold = pb.clone();
+    let config_clone = config.clone();
     let report = WalkDir::new(target)
         .into_iter()
         .skip(1)
@@ -397,12 +524,23 @@ fn scan(target: PathBuf, progress_bar: bool) -> Report {
                         return partial;
                     }
                     if entry.file_type().is_dir() {
+                        if config_clone.collect_file_entries {
+                            partial.file_entries.push(FileEntry {
+                                path: path.clone(),
+                                mime_type: "application/x-directory".to_string(),
+                                size: 0,
+                                created_at: None,
+                                modified_at: None,
+                                content_hash: None,
+                                is_dir: true,
+                            });
+                        }
                         partial.folders.push(path);
                     } else {
                         if let Some(ref pb) = pb_fold {
                             pb.tick();
                         }
-                        if let Err(e) = process_entry(&path, &mut partial) {
+                        if let Err(e) = process_entry(&path, &mut partial, &config_clone) {
                             partial.errors.push(ScanError {
                                 path,
                                 message: e.to_string(),
@@ -438,7 +576,11 @@ fn main() {
         );
         std::process::exit(1);
     }
-    let report = scan(cli.target, cli.progress_bar);
+    let config = ScanConfig {
+        collect_file_entries: matches!(cli.output, OutputFormat::Ftm),
+        progress_bar: cli.progress_bar,
+    };
+    let report = scan(cli.target, &config);
     report.display(&cli.output, cli.mime);
 }
 
@@ -446,9 +588,19 @@ fn main() {
 mod tests {
     use super::*;
 
+    fn scan_default(target: PathBuf) -> Report {
+        scan(
+            target,
+            &ScanConfig {
+                collect_file_entries: false,
+                progress_bar: false,
+            },
+        )
+    }
+
     #[test]
     fn test_with_testdata_folder() {
-        let report = scan("testdata".into(), false);
+        let report = scan_default("testdata".into());
         let num_files: i32 = report.extensions.values().sum();
         // 27 top-level files + 4 inner files (one archived.txt per archive)
         assert_eq!(num_files, 31);
@@ -465,7 +617,7 @@ mod tests {
 
     #[test]
     fn test_scan_zip_archive() {
-        let report = scan("testdata/archives/sample.zip".into(), false);
+        let report = scan_default("testdata/archives/sample.zip".into());
         let num_files: i32 = report.extensions.values().sum();
         assert_eq!(num_files, 2); // 1 zip + 1 txt inside
         assert_eq!(report.extensions.get("zip"), Some(&1));
@@ -475,7 +627,7 @@ mod tests {
 
     #[test]
     fn test_scan_tar_archive() {
-        let report = scan("testdata/archives/sample.tar".into(), false);
+        let report = scan_default("testdata/archives/sample.tar".into());
         let num_files: i32 = report.extensions.values().sum();
         assert_eq!(num_files, 2); // 1 tar + 1 txt inside
         assert_eq!(report.extensions.get("tar"), Some(&1));
@@ -485,7 +637,7 @@ mod tests {
 
     #[test]
     fn test_scan_gz_archive() {
-        let report = scan("testdata/archives/sample.gz".into(), false);
+        let report = scan_default("testdata/archives/sample.gz".into());
         let num_files: i32 = report.extensions.values().sum();
         assert_eq!(num_files, 2); // 1 gz + 1 txt inside
         assert_eq!(report.extensions.get("gz"), Some(&1));
@@ -495,7 +647,7 @@ mod tests {
 
     #[test]
     fn test_scan_7z_archive() {
-        let report = scan("testdata/archives/sample.7z".into(), false);
+        let report = scan_default("testdata/archives/sample.7z".into());
         let num_files: i32 = report.extensions.values().sum();
         assert_eq!(num_files, 2); // 1 7z + 1 txt inside
         assert_eq!(report.extensions.get("7z"), Some(&1));
@@ -588,7 +740,7 @@ mod tests {
             .write_all(b"Hello")
             .expect("failed to write txt");
 
-        let report = scan(dir.clone(), false);
+        let report = scan_default(dir.clone());
 
         assert_eq!(report.mimetypes.get("image/png"), Some(&1));
         assert_eq!(report.mimetypes.get("application/pdf"), Some(&1));
@@ -601,7 +753,7 @@ mod tests {
 
     #[test]
     fn test_testdata_mimetypes() {
-        let report = scan("testdata".into(), false);
+        let report = scan_default("testdata".into());
         // Verify various MIME types are detected correctly
         assert_eq!(report.mimetypes.get("image/png"), Some(&1));
         assert_eq!(report.mimetypes.get("image/jpeg"), Some(&1));
@@ -645,7 +797,7 @@ mod tests {
         let readable_file = dir.join("readable.txt");
         std::fs::write(&readable_file, "hello").expect("failed to write readable file");
 
-        let report = scan(dir.clone(), false);
+        let report = scan_default(dir.clone());
 
         // Should have scanned the readable file
         assert_eq!(report.extensions.get("txt"), Some(&1));
@@ -696,5 +848,121 @@ mod tests {
         assert_eq!(report.errors.len(), 2);
         assert_eq!(report.errors[0].path, PathBuf::from("/path/to/file1.txt"));
         assert_eq!(report.errors[1].path, PathBuf::from("/path/to/file2.txt"));
+    }
+
+    #[test]
+    fn test_mime_to_ftm_schema() {
+        assert_eq!(mime_to_ftm_schema("image/png"), "Image");
+        assert_eq!(mime_to_ftm_schema("image/jpeg"), "Image");
+        assert_eq!(mime_to_ftm_schema("audio/mpeg"), "Audio");
+        assert_eq!(mime_to_ftm_schema("audio/ogg"), "Audio");
+        assert_eq!(mime_to_ftm_schema("video/mp4"), "Video");
+        assert_eq!(mime_to_ftm_schema("video/quicktime"), "Video");
+        assert_eq!(mime_to_ftm_schema("application/pdf"), "Pages");
+        assert_eq!(mime_to_ftm_schema("application/zip"), "Package");
+        assert_eq!(mime_to_ftm_schema("application/x-tar"), "Package");
+        assert_eq!(mime_to_ftm_schema("message/rfc822"), "Email");
+        assert_eq!(mime_to_ftm_schema("text/html"), "HyperText");
+        assert_eq!(mime_to_ftm_schema("text/plain"), "PlainText");
+        assert_eq!(mime_to_ftm_schema("application/octet-stream"), "Document");
+        assert_eq!(mime_to_ftm_schema("application/x-ole-storage"), "Document");
+    }
+
+    #[test]
+    fn test_compute_sha1() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("sumdir_test_sha1");
+        std::fs::create_dir_all(&dir).expect("failed to create test dir");
+        let file_path = dir.join("test.bin");
+        let mut file = File::create(&file_path).expect("failed to create test file");
+        file.write_all(b"abc").expect("failed to write test file");
+
+        // SHA1("abc") = a9993e364706816aba3e25717850c26c9cd0d89d
+        let hash = compute_sha1(&file_path).expect("failed to compute SHA1");
+        assert_eq!(hash, "a9993e364706816aba3e25717850c26c9cd0d89d");
+
+        std::fs::remove_dir_all(&dir).expect("failed to cleanup test dir");
+    }
+
+    #[test]
+    fn test_scan_ftm_collects_file_entries() {
+        let config = ScanConfig {
+            collect_file_entries: true,
+            progress_bar: false,
+        };
+        let report = scan("testdata".into(), &config);
+        assert!(
+            !report.file_entries.is_empty(),
+            "expected file entries to be populated"
+        );
+        // All entries should have a non-empty path
+        for entry in &report.file_entries {
+            assert!(entry.path.to_string_lossy().len() > 0);
+        }
+        // File entries should have mime types set
+        let file_entries: Vec<_> = report.file_entries.iter().filter(|e| !e.is_dir).collect();
+        assert!(!file_entries.is_empty());
+        for entry in &file_entries {
+            assert!(!entry.mime_type.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_scan_no_entries_when_not_ftm() {
+        let config = ScanConfig {
+            collect_file_entries: false,
+            progress_bar: false,
+        };
+        let report = scan("testdata".into(), &config);
+        assert!(
+            report.file_entries.is_empty(),
+            "expected no file entries when collect_file_entries is false"
+        );
+    }
+
+    #[test]
+    fn test_file_entry_to_ftm_entity_image() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join("sumdir_test_ftm_image");
+        std::fs::create_dir_all(&dir).expect("failed to create test dir");
+        let file_path = dir.join("photo.png");
+        let png_header: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        File::create(&file_path)
+            .expect("failed to create file")
+            .write_all(&png_header)
+            .expect("failed to write file");
+
+        let entry = FileEntry {
+            path: file_path.clone(),
+            mime_type: "image/png".to_string(),
+            size: 8,
+            created_at: None,
+            modified_at: None,
+            content_hash: Some("abc123".to_string()),
+            is_dir: false,
+        };
+
+        let entity = file_entry_to_ftm_entity(&entry).expect("failed to create FTM entity");
+        assert_eq!(entity.schema(), "Image");
+        assert_eq!(entity.id(), file_path.to_string_lossy().as_ref());
+
+        std::fs::remove_dir_all(&dir).expect("failed to cleanup test dir");
+    }
+
+    #[test]
+    fn test_file_entry_to_ftm_entity_folder() {
+        let entry = FileEntry {
+            path: PathBuf::from("/some/dir"),
+            mime_type: "application/x-directory".to_string(),
+            size: 0,
+            created_at: None,
+            modified_at: None,
+            content_hash: None,
+            is_dir: true,
+        };
+
+        let entity = file_entry_to_ftm_entity(&entry).expect("failed to create FTM entity");
+        assert_eq!(entity.schema(), "Folder");
+        assert_eq!(entity.id(), "/some/dir");
     }
 }
