@@ -1,7 +1,8 @@
+use jwalk::WalkDir;
+use rayon::prelude::*;
 use std::fs::File;
 use std::io::Read;
 use std::{collections::BTreeMap, path::PathBuf};
-use walkdir::WalkDir;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -134,19 +135,17 @@ fn detect_mimetype(path: &std::path::Path) -> Result<String> {
     Ok("application/octet-stream".to_string())
 }
 
-fn process_entry(entry: &walkdir::DirEntry, report: &mut Report) -> Result<()> {
-    let ext = entry
-        .path()
+fn process_entry(path: &std::path::Path, report: &mut Report) -> Result<()> {
+    let ext = path
         .extension()
         .unwrap_or_default()
         .to_owned()
         .into_string()
         .unwrap_or_default();
 
-    let metadata = entry
-        .path()
+    let metadata = path
         .metadata()
-        .with_context(|| format!("failed to read metadata for {:?}", entry.path()))?;
+        .with_context(|| format!("failed to read metadata for {:?}", path))?;
 
     report.size += metadata.len();
     report
@@ -155,8 +154,8 @@ fn process_entry(entry: &walkdir::DirEntry, report: &mut Report) -> Result<()> {
         .and_modify(|e| *e += 1)
         .or_insert(1);
 
-    let mimetype = detect_mimetype(entry.path())
-        .with_context(|| format!("failed to detect mimetype for {:?}", entry.path()))?;
+    let mimetype = detect_mimetype(path)
+        .with_context(|| format!("failed to detect mimetype for {:?}", path))?;
 
     report
         .mimetypes
@@ -167,9 +166,26 @@ fn process_entry(entry: &walkdir::DirEntry, report: &mut Report) -> Result<()> {
     Ok(())
 }
 
-fn scan(target: PathBuf, progress_bar: bool) -> Report {
-    let mut report = Report::default();
+fn merge_reports(mut a: Report, b: Report) -> Report {
+    for (ext, count) in b.extensions {
+        a.extensions
+            .entry(ext)
+            .and_modify(|e| *e += count)
+            .or_insert(count);
+    }
+    for (mime, count) in b.mimetypes {
+        a.mimetypes
+            .entry(mime)
+            .and_modify(|e| *e += count)
+            .or_insert(count);
+    }
+    a.folders.extend(b.folders);
+    a.size += b.size;
+    a.errors.extend(b.errors);
+    a
+}
 
+fn scan(target: PathBuf, progress_bar: bool) -> Report {
     let pb = if progress_bar {
         let progress = ProgressBar::new_spinner();
         progress.set_style(
@@ -183,34 +199,47 @@ fn scan(target: PathBuf, progress_bar: bool) -> Report {
         None
     };
 
-    for entry in WalkDir::new(target).into_iter().skip(1) {
-        match entry {
-            Ok(entry) => {
-                if entry.path().is_dir() {
-                    report.folders.push(entry.path().to_path_buf());
-                } else {
-                    if let Some(ref progress) = pb {
-                        progress.set_message(format!("Processing: {}", entry.path().display()));
-                        progress.tick();
-                    }
-
-                    if let Err(e) = process_entry(&entry, &mut report) {
-                        report.errors.push(ScanError {
-                            path: entry.path().to_path_buf(),
-                            message: e.to_string(),
+    let pb_fold = pb.clone();
+    let report = WalkDir::new(target)
+        .into_iter()
+        .skip(1)
+        .par_bridge()
+        .fold(Report::default, move |mut partial, entry| {
+            match entry {
+                Ok(entry) => {
+                    let path = entry.path();
+                    if let Some(err) = entry.read_children_error {
+                        partial.errors.push(ScanError {
+                            path,
+                            message: format!("failed to read directory: {err}"),
                         });
+                        return partial;
+                    }
+                    if entry.file_type().is_dir() {
+                        partial.folders.push(path);
+                    } else {
+                        if let Some(ref pb) = pb_fold {
+                            pb.tick();
+                        }
+                        if let Err(e) = process_entry(&path, &mut partial) {
+                            partial.errors.push(ScanError {
+                                path,
+                                message: e.to_string(),
+                            });
+                        }
                     }
                 }
+                Err(e) => {
+                    let path = e.path().map(|p| p.to_path_buf()).unwrap_or_default();
+                    partial.errors.push(ScanError {
+                        path,
+                        message: format!("failed to read entry: {e}"),
+                    });
+                }
             }
-            Err(e) => {
-                let path = e.path().map(|p| p.to_path_buf()).unwrap_or_default();
-                report.errors.push(ScanError {
-                    path,
-                    message: format!("failed to read entry: {e}"),
-                });
-            }
-        }
-    }
+            partial
+        })
+        .reduce(Report::default, merge_reports);
 
     if let Some(progress) = pb {
         progress.finish_with_message(format!("Completed with {} errors", report.errors.len()));
