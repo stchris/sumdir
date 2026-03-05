@@ -1,6 +1,20 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [0.4.0] - 2026-03-05
+
+### Added
+
+- Support for walking archives (tar, gzip, zip, 7zip)
+
+### Other
+
+- Merge pull request #14 from stchris/archives
+- New export format: ftm stub entities
+- Use ftm-export 0.1.0
+- Merge pull request #15 from stchris/ftm-export
+- License
+
 ## [0.3.0] - 2026-03-05
 
 ### Added
