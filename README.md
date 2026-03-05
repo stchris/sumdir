@@ -20,21 +20,33 @@ or check the [Releases](https://github.com/stchris/sumdir/releases) page.
 
 ## Usage
 
-```bash
-sumdir <directory>              # group by file extension
-sumdir <directory> -m           # group by MIME type (magic byte detection)
-sumdir <directory> -o csv       # output as CSV
-sumdir <directory> -o json      # output as JSON
-sumdir <directory> -m -o json   # combine flags
+<!-- help-output-start -->
 ```
+summarize a directory by file type frequency
+
+Usage: sumdir [OPTIONS] <TARGET>
+
+Arguments:
+  <TARGET>  
+
+Options:
+  -v, --verbose          
+  -o, --output <OUTPUT>  [default: text] [possible values: text, csv, json, ftm]
+  -m, --mime             
+  -p, --progress-bar     
+  -h, --help             Print help
+  -V, --version          Print version
+```
+<!-- help-output-end -->
 
 ## Example output
 
-```bash
+<!-- example-output-start -->
+```
 $ sumdir -m testdata/
 
-27 files, 5 folders, 1 KiB
-application/octet-stream: 5
+31 files, 5 folders, 4.39 KiB
+application/octet-stream: 9
 application/zip: 4
 application/x-ole-storage: 2
 application/gzip: 1
@@ -54,6 +66,7 @@ image/vnd.microsoft.icon: 1
 image/webp: 1
 text/xml: 1
 ```
+<!-- example-output-end -->
 
 ## Releasing
 
@@ -67,11 +80,6 @@ cargo install cargo-release git-cliff
 
 ### Making a Release
 
-1. Ensure the changelog is up to date (`$ git cliff -o CHANGELOG.md`)
-2. Ensure all changes are committed
-3. Run cargo-release with the desired version bump:
-   ```bash
-   cargo release --no-publish patch  # 0.1.0 -> 0.1.1
-   cargo release --no-publish minor  # 0.1.0 -> 0.2.0
-   cargo release --no-publish major  # 0.1.0 -> 1.0.0
+```bash
+cargo release --no-publish {patch,minor,major}
    ```
