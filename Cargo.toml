@@ -5,6 +5,7 @@ edition = "2024"
 repository = "https://github.com/stchris/sumdir"
 homepage = "https://github.com/stchris/sumdir"
 description = "summarize a directory by file type frequency"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 anyhow = "1.0"
