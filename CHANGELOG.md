@@ -1,6 +1,16 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [0.3.0] - 2026-03-05
+
+### Added
+
+- Use jwalk with rayon for double speed
+
+### Other
+
+- Merge pull request #13 from stchris/jwalk
+
 ## [0.2.0] - 2026-01-14
 
 ### Added
