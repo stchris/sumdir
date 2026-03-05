@@ -1,8 +1,11 @@
+use flate2::read::GzDecoder;
 use jwalk::WalkDir;
 use rayon::prelude::*;
 use std::fs::File;
 use std::io::Read;
+use std::path::Path;
 use std::{collections::BTreeMap, path::PathBuf};
+use tar::Archive as TarArchive;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -135,6 +138,162 @@ fn detect_mimetype(path: &std::path::Path) -> Result<String> {
     Ok("application/octet-stream".to_string())
 }
 
+fn is_archive_extension(ext: &str) -> bool {
+    matches!(ext, "zip" | "tar" | "gz" | "tgz" | "7z")
+}
+
+/// Process a virtual file entry from inside an archive (by name and first bytes for detection).
+fn process_virtual_entry(name: &str, data: &[u8], report: &mut Report) {
+    let ext = Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_string();
+    report
+        .extensions
+        .entry(ext)
+        .and_modify(|c| *c += 1)
+        .or_insert(1);
+    let mimetype = infer::get(data)
+        .map(|k| k.mime_type().to_string())
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    report
+        .mimetypes
+        .entry(mimetype)
+        .and_modify(|c| *c += 1)
+        .or_insert(1);
+}
+
+fn scan_zip_contents(path: &Path, report: &mut Report) -> Result<()> {
+    let file = File::open(path).with_context(|| format!("failed to open {path:?}"))?;
+    let mut archive =
+        zip::ZipArchive::new(file).with_context(|| format!("failed to read zip {path:?}"))?;
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .with_context(|| format!("failed to read zip entry {i} in {path:?}"))?;
+        if entry.is_dir() {
+            continue;
+        }
+        let name = entry.name().to_string();
+        let mut buffer = [0u8; 8192];
+        let bytes_read = Read::read(&mut entry, &mut buffer).unwrap_or(0);
+        process_virtual_entry(&name, &buffer[..bytes_read], report);
+    }
+    Ok(())
+}
+
+fn scan_tar_contents(path: &Path, report: &mut Report) -> Result<()> {
+    let file = File::open(path).with_context(|| format!("failed to open {path:?}"))?;
+    let mut archive = TarArchive::new(file);
+    for entry_result in archive
+        .entries()
+        .with_context(|| format!("failed to read tar entries in {path:?}"))?
+    {
+        let mut entry =
+            entry_result.with_context(|| format!("failed to read tar entry in {path:?}"))?;
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
+        let name = entry
+            .path()
+            .with_context(|| "failed to get tar entry path")?
+            .to_string_lossy()
+            .to_string();
+        let mut buffer = [0u8; 8192];
+        let bytes_read = Read::read(&mut entry, &mut buffer).unwrap_or(0);
+        process_virtual_entry(&name, &buffer[..bytes_read], report);
+    }
+    Ok(())
+}
+
+fn scan_gz_contents(path: &Path, report: &mut Report) -> Result<()> {
+    // Attempt to read as tar.gz first; fall back to single compressed file on failure.
+    let file = File::open(path).with_context(|| format!("failed to open {path:?}"))?;
+    let decoder = GzDecoder::new(file);
+    let mut archive = TarArchive::new(decoder);
+
+    let mut entries_processed = 0usize;
+    let mut first_error: Option<anyhow::Error> = None;
+
+    match archive.entries() {
+        Err(e) => first_error = Some(anyhow::Error::from(e)),
+        Ok(entries) => {
+            for entry_result in entries {
+                match entry_result {
+                    Err(e) => {
+                        if entries_processed == 0 {
+                            first_error = Some(anyhow::Error::from(e));
+                        }
+                        break;
+                    }
+                    Ok(mut entry) => {
+                        if entry.header().entry_type().is_file() {
+                            let name = entry
+                                .path()
+                                .map(|p| p.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            let mut buffer = [0u8; 8192];
+                            let bytes_read = Read::read(&mut entry, &mut buffer).unwrap_or(0);
+                            process_virtual_entry(&name, &buffer[..bytes_read], report);
+                            entries_processed += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if entries_processed == 0 && first_error.is_some() {
+        // Not a tar.gz — treat as a single gzip-compressed file.
+        let file = File::open(path).with_context(|| format!("failed to open {path:?}"))?;
+        let mut decoder = GzDecoder::new(file);
+        let inner_name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+        let mut buffer = [0u8; 8192];
+        let bytes_read = Read::read(&mut decoder, &mut buffer).unwrap_or(0);
+        process_virtual_entry(inner_name, &buffer[..bytes_read], report);
+    }
+
+    Ok(())
+}
+
+fn scan_7z_contents(path: &Path, report: &mut Report) -> Result<()> {
+    let mut archive = sevenz_rust::SevenZReader::open(path, sevenz_rust::Password::empty())
+        .with_context(|| format!("failed to open 7z archive {path:?}"))?;
+    archive
+        .for_each_entries(
+            &mut |entry: &sevenz_rust::SevenZArchiveEntry, reader: &mut dyn Read| {
+                if entry.is_directory() {
+                    return Ok(true);
+                }
+                let name = entry.name().to_string();
+                let mut buffer = [0u8; 8192];
+                let bytes_read = Read::read(reader, &mut buffer).unwrap_or(0);
+                process_virtual_entry(&name, &buffer[..bytes_read], report);
+                Ok(true)
+            },
+        )
+        .with_context(|| format!("failed to read 7z entries from {path:?}"))?;
+    Ok(())
+}
+
+fn scan_archive_contents(path: &Path, report: &mut Report) -> Result<()> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default();
+    match ext {
+        "zip" => scan_zip_contents(path, report),
+        "tar" => scan_tar_contents(path, report),
+        "gz" | "tgz" => scan_gz_contents(path, report),
+        "7z" => scan_7z_contents(path, report),
+        _ => Ok(()),
+    }
+}
+
 fn process_entry(path: &std::path::Path, report: &mut Report) -> Result<()> {
     let ext = path
         .extension()
@@ -150,7 +309,7 @@ fn process_entry(path: &std::path::Path, report: &mut Report) -> Result<()> {
     report.size += metadata.len();
     report
         .extensions
-        .entry(ext)
+        .entry(ext.clone())
         .and_modify(|e| *e += 1)
         .or_insert(1);
 
@@ -162,6 +321,11 @@ fn process_entry(path: &std::path::Path, report: &mut Report) -> Result<()> {
         .entry(mimetype)
         .and_modify(|e| *e += 1)
         .or_insert(1);
+
+    if is_archive_extension(&ext) {
+        scan_archive_contents(path, report)
+            .with_context(|| format!("failed to scan archive contents of {:?}", path))?;
+    }
 
     Ok(())
 }
@@ -185,19 +349,36 @@ fn merge_reports(mut a: Report, b: Report) -> Report {
     a
 }
 
+fn make_progress_bar(enabled: bool) -> Option<ProgressBar> {
+    if !enabled {
+        return None;
+    }
+    let progress = ProgressBar::new_spinner();
+    progress.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.green} [{elapsed}] {wide_msg}")
+            .expect("failed to set progress style"),
+    );
+    progress.set_message("Scanning target...");
+    Some(progress)
+}
+
 fn scan(target: PathBuf, progress_bar: bool) -> Report {
-    let pb = if progress_bar {
-        let progress = ProgressBar::new_spinner();
-        progress.set_style(
-            ProgressStyle::default_spinner()
-                .template("{spinner:.green} [{elapsed}] {wide_msg}")
-                .expect("failed to set progress style"),
-        );
-        progress.set_message("Scanning target...");
-        Some(progress)
-    } else {
-        None
-    };
+    let pb = make_progress_bar(progress_bar);
+
+    if target.is_file() {
+        let mut report = Report::default();
+        if let Err(e) = process_entry(&target, &mut report) {
+            report.errors.push(ScanError {
+                path: target,
+                message: e.to_string(),
+            });
+        }
+        if let Some(progress) = pb {
+            progress.finish_with_message(format!("Completed with {} errors", report.errors.len()));
+        }
+        return report;
+    }
 
     let pb_fold = pb.clone();
     let report = WalkDir::new(target)
@@ -269,7 +450,8 @@ mod tests {
     fn test_with_testdata_folder() {
         let report = scan("testdata".into(), false);
         let num_files: i32 = report.extensions.values().sum();
-        assert_eq!(num_files, 27);
+        // 27 top-level files + 4 inner files (one archived.txt per archive)
+        assert_eq!(num_files, 31);
         assert_eq!(report.folders.len(), 5);
         assert_eq!(report.errors.len(), 0);
         // Verify some expected extensions
@@ -277,6 +459,48 @@ mod tests {
         assert_eq!(report.extensions.get("pdf"), Some(&1));
         assert_eq!(report.extensions.get("jpg"), Some(&1));
         assert_eq!(report.extensions.get("docx"), Some(&1));
+        // plain.txt + 4 archived.txt files (one per archive)
+        assert_eq!(report.extensions.get("txt"), Some(&5));
+    }
+
+    #[test]
+    fn test_scan_zip_archive() {
+        let report = scan("testdata/archives/sample.zip".into(), false);
+        let num_files: i32 = report.extensions.values().sum();
+        assert_eq!(num_files, 2); // 1 zip + 1 txt inside
+        assert_eq!(report.extensions.get("zip"), Some(&1));
+        assert_eq!(report.extensions.get("txt"), Some(&1));
+        assert_eq!(report.errors.len(), 0);
+    }
+
+    #[test]
+    fn test_scan_tar_archive() {
+        let report = scan("testdata/archives/sample.tar".into(), false);
+        let num_files: i32 = report.extensions.values().sum();
+        assert_eq!(num_files, 2); // 1 tar + 1 txt inside
+        assert_eq!(report.extensions.get("tar"), Some(&1));
+        assert_eq!(report.extensions.get("txt"), Some(&1));
+        assert_eq!(report.errors.len(), 0);
+    }
+
+    #[test]
+    fn test_scan_gz_archive() {
+        let report = scan("testdata/archives/sample.gz".into(), false);
+        let num_files: i32 = report.extensions.values().sum();
+        assert_eq!(num_files, 2); // 1 gz + 1 txt inside
+        assert_eq!(report.extensions.get("gz"), Some(&1));
+        assert_eq!(report.extensions.get("txt"), Some(&1));
+        assert_eq!(report.errors.len(), 0);
+    }
+
+    #[test]
+    fn test_scan_7z_archive() {
+        let report = scan("testdata/archives/sample.7z".into(), false);
+        let num_files: i32 = report.extensions.values().sum();
+        assert_eq!(num_files, 2); // 1 7z + 1 txt inside
+        assert_eq!(report.extensions.get("7z"), Some(&1));
+        assert_eq!(report.extensions.get("txt"), Some(&1));
+        assert_eq!(report.errors.len(), 0);
     }
 
     #[test]
