@@ -151,7 +151,7 @@ impl Report {
     fn display_ftm(&self) {
         for entry in &self.file_entries {
             match file_entry_to_ftm_entity(entry) {
-                Ok(entity) => match serde_json::to_string(&entity) {
+                Ok(entity) => match entity.to_ftm_json() {
                     Ok(json) => println!("{json}"),
                     Err(e) => eprintln!("error: failed to serialize entity: {e}"),
                 },
