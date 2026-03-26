@@ -7,6 +7,8 @@ All notable changes to this project will be documented in this file.
 
 - Add prek config
 - Cargo updates, including ftm-types 0.4.0
+- Chore: Release sumdir version 0.5.0
+- Don't publish on release
 
 ## [0.4.1] - 2026-03-06
 
