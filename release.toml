@@ -1,1 +1,2 @@
 pre-release-hook = ["./scripts/update-readme-help.sh"]
+publish = false
