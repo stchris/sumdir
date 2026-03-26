@@ -5,10 +5,18 @@ All notable changes to this project will be documented in this file.
 
 ### New
 
+- Add prek config
+- Cargo updates, including ftm-types 0.4.0
+
+## [0.4.1] - 2026-03-06
+
+### New
+
 - Update installation section
 - Release automation
 - Use to_ftm_json() for proper JSON structure with nested props
 - Simpler git cliff config without conventional commits
+- Chore: Release sumdir version 0.4.1
 
 ## [0.4.0] - 2026-03-05
 
